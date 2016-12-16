@@ -9,14 +9,10 @@ import Data.Text (Text, pack, unpack)
 import Text.Parsec
 import Text.Parsec.Text
 
-newtype ModuleName = ModuleName { moduleName :: Text } deriving (Eq, Show)
+-- * S-expression Components
 
 data Reserved = AddImportTag | SrcSpanTag
   deriving (Eq, Ord, Show)
-
-parseCommandName :: Parser Reserved
-parseCommandName = choice [ AddImportTag <$ string "add-import" 
-                          , SrcSpanTag <$ string "span" ]
 
 data Atom
   = Reserved Reserved
@@ -24,12 +20,40 @@ data Atom
   | IntAtom Int
   | KeyWord Text
   deriving (Eq, Ord)
-  
+
 instance Show Atom where
-  show (Reserved c) = show c
+  show (Reserved c) = reservedWord c
   show (TextAtom t) = '"' : unpack t ++ "\""
   show (IntAtom i) = show i
   show (KeyWord t) = ':' : unpack t
+
+-- * The Expression Language
+
+newtype ModuleName = ModuleName { moduleName :: Text } deriving (Eq, Show)
+
+data Exp = AddImport ModuleName Text
+         | SrcSpan Int (Maybe Int) (Maybe Int) (Maybe Int)
+  deriving (Eq, Show)
+
+-- * Pattern Synonyms
+
+pattern WFCommand :: Reserved -> WellFormedSExpr Atom
+pattern WFCommand c = WFSAtom (Reserved c)
+
+pattern WFText :: Text -> WellFormedSExpr Atom
+pattern WFText t = WFSAtom (TextAtom t)
+
+pattern WFInt :: Int -> WellFormedSExpr Atom
+pattern WFInt t = WFSAtom (IntAtom t)
+
+pattern WFKeyWord :: Text -> WellFormedSExpr Atom
+pattern WFKeyWord t = WFSAtom (KeyWord t)
+
+-- * Parsing
+
+parseCommandName :: Parser Reserved
+parseCommandName = choice [ AddImportTag <$ string "add-import"
+                          , SrcSpanTag <$ string "span" ]
 
 parseAtom :: Parser Atom
 parseAtom =
@@ -46,27 +70,11 @@ parseAtom =
   where
     natural = foldl' (\s d -> s * 10 + digitToInt d) 0 <$> many1 digit
 
-data Exp = AddImport ModuleName Text 
-         | SrcSpan Int (Maybe Int) Int (Maybe Int)
-  deriving (Eq, Show)
-  
-pattern WFCommand :: Reserved -> WellFormedSExpr Atom
-pattern WFCommand c <- WFSAtom (Reserved c)
-
-pattern WFText :: Text -> WellFormedSExpr Atom
-pattern WFText t <- WFSAtom (TextAtom t)
-
-pattern WFInt :: Int -> WellFormedSExpr Atom
-pattern WFInt t <- WFSAtom (IntAtom t)
-
-pattern WFKeyWord :: Text -> WellFormedSExpr Atom
-pattern WFKeyWord t <- WFSAtom (KeyWord t)
-
 -- | Pick out any of the start line, start column, end line, and end
 -- column values given as keyword arguments.
 srcSpanKeywordArgs :: [WellFormedSExpr Atom] -> Maybe Exp
 srcSpanKeywordArgs = go (Nothing,Nothing,Nothing,Nothing)
-  where go (Just sl,sc, Just el,ec) [] = Just (SrcSpan sl sc el ec)
+  where go (Just sl,sc, el,ec) [] = Just (SrcSpan sl sc el ec)
         go (sl, sc, el, ec) xs =
           case xs of
             (WFKeyWord "start-line" : WFInt i : xs') -> go (Just i, sc, el, ec) xs'
@@ -75,21 +83,49 @@ srcSpanKeywordArgs = go (Nothing,Nothing,Nothing,Nothing)
             (WFKeyWord "end-col" : WFInt l : xs') -> go (sl,sc,el,Just l) xs'
             _ -> Nothing
 
+-- | We support several versions of source span specification: just
+-- the start line, the start line and the end line, or a version that
+-- uses keywords to identify the span components: @:start-line@,
+-- @:start-col@, @:end-line@, @:end-col@.
 parseSexp :: WellFormedSExpr Atom -> Either String Exp
 parseSexp (WFSList [WFCommand AddImportTag, WFText a1, WFText a2]) =
   Right $ AddImport (ModuleName a1) a2
+
+parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i]) =
+  Right $ SrcSpan i Nothing Nothing Nothing
 parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i, WFInt j]) =
-  Right $ SrcSpan i Nothing j Nothing          
+  Right $ SrcSpan i Nothing (Just j) Nothing
 parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i, WFInt j, WFInt k, WFInt l]) =
-  Right $ SrcSpan i (Just j) k (Just l)
+  Right $ SrcSpan i (Just j) (Just k) (Just l)
 parseSexp (WFSList (WFCommand SrcSpanTag : (srcSpanKeywordArgs -> Just s))) = Right s
 parseSexp s = Left ("Invalid expression: " ++ unpack (encodeOne sexpPrinter s))
-
-sexpPrinter :: SExprPrinter Atom (WellFormedSExpr Atom)
-sexpPrinter = setFromCarrier fromWellFormed (basicPrint (pack . show))
 
 langParser :: SExprParser Atom (WellFormedSExpr Atom)
 langParser = asWellFormed (mkParser parseAtom)
 
-test :: Either String (WellFormedSExpr Atom)
-test = decodeOne langParser "(add-import \"Pipes\" \"Consumer\")"
+-- * Printing
+
+reservedWord :: Reserved -> String
+reservedWord AddImportTag = "add-import"
+reservedWord SrcSpanTag = "span"
+
+sexpPrinter :: SExprPrinter Atom (WellFormedSExpr Atom)
+sexpPrinter = setFromCarrier fromWellFormed (basicPrint (pack . show))
+
+toSexp :: Exp -> WellFormedSExpr Atom
+toSexp (AddImport (ModuleName n) thing) =
+  WFSList [WFCommand AddImportTag, WFText n, WFText thing]
+toSexp (SrcSpan sl sc el ec) =
+  WFSList $ [ WFCommand SrcSpanTag, WFKeyWord "start-line", WFInt sl ]
+            ++ maybe [] (\sc' -> [WFKeyWord "start-col", WFInt sc']) sc
+            ++ maybe [] (\el' -> [WFKeyWord "end-line", WFInt el']) el
+            ++ maybe [] (\ec' -> [WFKeyWord "end-col", WFInt ec']) ec
+
+test1 :: Either String (WellFormedSExpr Atom)
+test1 = decodeOne langParser "(add-import \"Pipes\" \"Consumer\")"
+
+test2 :: Either String (WellFormedSExpr Atom)
+test2 = decodeOne langParser "(span :start-line 23 :end-line 42 :start-col 2)"
+
+roundTrip1 :: Either String Text
+roundTrip1 = test2 >>= parseSexp >>= pure . encodeOne sexpPrinter . toSexp
