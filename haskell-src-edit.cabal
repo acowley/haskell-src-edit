@@ -1,0 +1,48 @@
+name:                haskell-src-edit
+version:             0.1.0.0
+synopsis:            Programmatic editing of Haskell source code
+description:         Please see README.md
+homepage:            https://github.com/acowley/haskell-src-edit#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Anthony Cowley
+maintainer:          acowley@gmail.com
+copyright:           Copyright (C) 2016 Anthony Cowley
+category:            Web
+build-type:          Simple
+extra-source-files:  README.md
+cabal-version:       >=1.10
+
+library
+  hs-source-dirs:      src
+  exposed-modules:     Language.Haskell.Edit
+                       Language.Haskell.Edit.Lang
+  build-depends:       base >= 4.7 && < 5,
+                       haskell-src-exts >= 1.19.1,
+                       containers, text,
+                       s-cargot >= 0.1.1.1 && < 0.2,
+                       parsec >= 3.1.11 && < 3.2                       
+                       -- haskell-src-exts-prisms == 1.18.2.0
+  default-language:    Haskell2010
+  ghc-options:         -Wall
+
+executable haskell-src-edit-exe
+  hs-source-dirs:      app
+  main-is:             Main.hs
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  build-depends:       base
+                     , haskell-src-edit
+  default-language:    Haskell2010
+
+test-suite haskell-src-edit-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       base
+                     , haskell-src-edit
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+source-repository head
+  type:     git
+  location: https://github.com/acowley/haskell-src-edit
