@@ -1,11 +1,12 @@
 {-# LANGUAGE OverloadedStrings, PatternSynonyms, ViewPatterns #-}
 module Language.Haskell.Edit.Lang where
-
+import Control.Monad ((>=>))
 import Data.Char (digitToInt)
 import Data.SCargot
 import Data.SCargot.Repr
 import Data.Foldable (foldl')
 import Data.Text (Text, pack, unpack)
+import qualified Data.Text as T
 import Text.Parsec
 import Text.Parsec.Text
 
@@ -19,20 +20,21 @@ data Atom
   | TextAtom Text
   | IntAtom Int
   | KeyWord Text
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
-instance Show Atom where
-  show (Reserved c) = reservedWord c
-  show (TextAtom t) = '"' : unpack t ++ "\""
-  show (IntAtom i) = show i
-  show (KeyWord t) = ':' : unpack t
+showT :: Atom -> Text
+showT (Reserved c) = reservedWord c
+showT (TextAtom t) = T.concat ["\"", t, "\""]
+showT (IntAtom i) = T.pack (show i)
+showT (KeyWord t) = T.cons ':' t
 
--- * The Expression Language
+-- * The Command Expression Language
 
 newtype ModuleName = ModuleName { moduleName :: Text } deriving (Eq, Show)
+newtype FileName = FileName { fileName :: Text } deriving (Eq, Show)
 
-data Exp = AddImport ModuleName Text
-         | SrcSpan Int (Maybe Int) (Maybe Int) (Maybe Int)
+data Command = AddImport FileName ModuleName Text
+             | SrcSpan Int (Maybe Int) (Maybe Int) (Maybe Int)
   deriving (Eq, Show)
 
 -- * Pattern Synonyms
@@ -72,7 +74,7 @@ parseAtom =
 
 -- | Pick out any of the start line, start column, end line, and end
 -- column values given as keyword arguments.
-srcSpanKeywordArgs :: [WellFormedSExpr Atom] -> Maybe Exp
+srcSpanKeywordArgs :: [WellFormedSExpr Atom] -> Maybe Command
 srcSpanKeywordArgs = go (Nothing,Nothing,Nothing,Nothing)
   where go (Just sl,sc, el,ec) [] = Just (SrcSpan sl sc el ec)
         go (sl, sc, el, ec) xs =
@@ -87,9 +89,9 @@ srcSpanKeywordArgs = go (Nothing,Nothing,Nothing,Nothing)
 -- the start line, the start line and the end line, or a version that
 -- uses keywords to identify the span components: @:start-line@,
 -- @:start-col@, @:end-line@, @:end-col@.
-parseSexp :: WellFormedSExpr Atom -> Either String Exp
-parseSexp (WFSList [WFCommand AddImportTag, WFText a1, WFText a2]) =
-  Right $ AddImport (ModuleName a1) a2
+parseSexp :: WellFormedSExpr Atom -> Either String Command
+parseSexp (WFSList [WFCommand AddImportTag, WFText f, WFText m, WFText t]) =
+  Right $ AddImport (FileName f) (ModuleName m) t
 
 parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i]) =
   Right $ SrcSpan i Nothing Nothing Nothing
@@ -105,21 +107,25 @@ langParser = asWellFormed (mkParser parseAtom)
 
 -- * Printing
 
-reservedWord :: Reserved -> String
+reservedWord :: Reserved -> Text
 reservedWord AddImportTag = "add-import"
 reservedWord SrcSpanTag = "span"
 
 sexpPrinter :: SExprPrinter Atom (WellFormedSExpr Atom)
-sexpPrinter = setFromCarrier fromWellFormed (basicPrint (pack . show))
+sexpPrinter = setFromCarrier fromWellFormed (basicPrint showT)
 
-toSexp :: Exp -> WellFormedSExpr Atom
-toSexp (AddImport (ModuleName n) thing) =
-  WFSList [WFCommand AddImportTag, WFText n, WFText thing]
+toSexp :: Command -> WellFormedSExpr Atom
+toSexp (AddImport (FileName f) (ModuleName m) thing) =
+  WFSList [ WFCommand AddImportTag, WFKeyWord "file", WFText f
+          , WFKeyWord "module", WFText m, WFText thing ]
 toSexp (SrcSpan sl sc el ec) =
   WFSList $ [ WFCommand SrcSpanTag, WFKeyWord "start-line", WFInt sl ]
             ++ maybe [] (\sc' -> [WFKeyWord "start-col", WFInt sc']) sc
             ++ maybe [] (\el' -> [WFKeyWord "end-line", WFInt el']) el
             ++ maybe [] (\ec' -> [WFKeyWord "end-col", WFInt ec']) ec
+
+parseExp :: Text -> Either String Command
+parseExp = decodeOne langParser >=> parseSexp
 
 test1 :: Either String (WellFormedSExpr Atom)
 test1 = decodeOne langParser "(add-import \"Pipes\" \"Consumer\")"
@@ -129,3 +135,6 @@ test2 = decodeOne langParser "(span :start-line 23 :end-line 42 :start-col 2)"
 
 roundTrip1 :: Either String Text
 roundTrip1 = test2 >>= parseSexp >>= pure . encodeOne sexpPrinter . toSexp
+
+printCommand :: Command -> Text
+printCommand = encodeOne sexpPrinter . toSexp

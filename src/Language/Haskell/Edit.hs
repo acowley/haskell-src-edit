@@ -1,11 +1,16 @@
-module Language.Haskell.Edit where
+{-# LANGUAGE ViewPatterns #-}
+module Language.Haskell.Edit (addImportToFile, C.ModuleName(..)) where
 import Prelude hiding (mod)
+import Control.Monad ((>=>))
 import Data.Char (isUpper)
 import Data.Foldable (foldl')
 import Data.List (nub, sortOn)
 import qualified Data.Map as M
 import Data.Maybe (maybeToList)
 import qualified Data.Set as S
+import qualified Data.Text as T
+import qualified Language.Haskell.Edit.Lang as C
+import Language.Haskell.Edit.Result (Result(..))
 import Language.Haskell.Exts
 
 testMod :: IO (ParseResult (Module SrcSpanInfo, [Comment]))
@@ -50,8 +55,8 @@ lineBeforeImports (m,cs) = go cs
           | ln' < start = ln'
           | otherwise = afterComments (end+1) cs'
 
-findLineForImport :: (Module SrcSpanInfo, [Comment]) 
-                  -> String 
+findLineForImport :: (Module SrcSpanInfo, [Comment])
+                  -> String
                   -> (Int, Maybe (ImportDecl ()))
 findLineForImport mod@((Module _ _ _ imp _), _) m = go imp
   where go [] = (lineBeforeImports mod, Nothing)
@@ -119,7 +124,7 @@ decomposeNested s = case break (== '(') s of
           | isUpper c = Just (ConName () (Ident () n))
           | otherwise = Just (VarName () (Ident () n))
         cn [] = Nothing
-        
+
 addToImport :: ImportSpec () -> ImportSpecList () -> ImportSpecList ()
 addToImport spec (ImportSpecList _ b ss) =
   ImportSpecList () b (compactImport $ spec:ss)
@@ -128,23 +133,24 @@ addToImport spec (ImportSpecList _ b ss) =
 -- @module@ and the line number at which it should be inserted. Note
 -- that importing a data constructor requires that @thing@ be
 -- @Type(Constuctor)@.
-addImport :: (Module SrcSpanInfo, [Comment])
-          -> ModuleName ()
+addImport :: C.ModuleName
           -> String
-          -> Either String (Int, String)
-addImport parsed mn@(ModuleName _ m) thing =
+          -> (Module SrcSpanInfo, [Comment])
+          -> Either String Result
+addImport (C.ModuleName (T.unpack -> m)) thing parsed =
   case impThing of
     Left e -> Left e
-    Right th ->  case imp of 
-      Nothing -> Right (ln, impStmt th)
-      Just existingImport -> 
-        let specs = maybe (ImportSpecList () False [th]) 
-                          (addToImport th) 
+    Right th ->  case imp of
+      Nothing -> Right $ AddLine ln (T.pack (prettyPrint (impStmt th)))
+      Just existingImport ->
+        let specs = maybe (ImportSpecList () False [th])
+                          (addToImport th)
                           (importSpecs existingImport)
-        in Right (ln, prettyPrint $ existingImport {importSpecs = Just specs})
+            import' = existingImport {importSpecs = Just specs}
+        in Right $ ReplaceLine ln (T.pack (prettyPrint import'))
   where (ln, imp) = findLineForImport parsed m
-        impStmt th = prettyPrint (ImportDecl () mn False False False Nothing Nothing (Just (ImportSpecList () False [th])))
-        impThing = 
+        impStmt th = ImportDecl () (ModuleName () m) False False False Nothing Nothing (Just (ImportSpecList () False [th]))
+        impThing =
           case thing of
             [] -> Left "Illegal identifier for import"
             (c:_) -> Right $
@@ -153,3 +159,13 @@ addImport parsed mn@(ModuleName _ m) thing =
                      Nothing -> IAbs () (NoNamespace ()) (Ident () thing)
                      Just (ty,con) -> IThingWith () ty (maybeToList con)
               else IVar () (Ident () thing)
+
+addImportToFile :: FilePath
+                -> C.ModuleName
+                -> String
+                -> IO (Either String Result)
+addImportToFile f m t = (parseResult >=> addImport m t)
+                        <$> parseFileWithComments defaultParseMode f
+  where parseResult (ParseOk x) = Right x
+        parseResult (ParseFailed sloc msg) =
+          Left $ "Haskell parse failed at "++show sloc++": "++msg
