@@ -12,7 +12,7 @@ import Text.Parsec.Text
 
 -- * S-expression Components
 
-data Reserved = AddImportTag | SrcSpanTag
+data Reserved = AddImportTag | RemoveImportTag | SrcSpanTag
   deriving (Eq, Ord, Show)
 
 data Atom
@@ -34,6 +34,7 @@ newtype ModuleName = ModuleName { moduleName :: Text } deriving (Eq, Show)
 newtype FileName = FileName { fileName :: Text } deriving (Eq, Show)
 
 data Command = AddImport FileName ModuleName Text
+             | RemoveImport FileName ModuleName (Maybe Text)
              | SrcSpan Int (Maybe Int) (Maybe Int) (Maybe Int)
   deriving (Eq, Show)
 
@@ -55,6 +56,7 @@ pattern WFKeyWord t = WFSAtom (KeyWord t)
 
 parseCommandName :: Parser Reserved
 parseCommandName = choice [ AddImportTag <$ string "add-import"
+                          , RemoveImportTag <$ string "remove-import"
                           , SrcSpanTag <$ string "span" ]
 
 parseAtom :: Parser Atom
@@ -71,6 +73,26 @@ parseAtom =
     ]
   where
     natural = foldl' (\s d -> s * 10 + digitToInt d) 0 <$> many1 digit
+
+-- * KeyWord Argument Parsers
+
+addImportKW :: FileName -> [WellFormedSExpr Atom] -> Maybe Command
+addImportKW f = go Nothing Nothing
+    where go (Just m) (Just thing) [] = Just (AddImport f (ModuleName m) thing)
+          go m thing xs =
+            case xs of
+              (WFKeyWord "module" : WFText m' : xs') -> go (Just m') thing xs'
+              (WFKeyWord "thing" : WFText t : xs') -> go m (Just t) xs'
+              _ -> Nothing
+
+removeImportKW :: FileName -> [WellFormedSExpr Atom] -> Maybe Command
+removeImportKW f = go Nothing Nothing
+  where go (Just m) thing [] = Just (RemoveImport f (ModuleName m) thing)
+        go m thing xs =
+          case xs of
+            (WFKeyWord "module" : WFText m' : xs') -> go (Just m') thing xs'
+            (WFKeyWord "thing" : WFText t : xs') -> go m (Just t) xs'
+            _ -> Nothing
 
 -- | Pick out any of the start line, start column, end line, and end
 -- column values given as keyword arguments.
@@ -92,6 +114,17 @@ srcSpanKeywordArgs = go (Nothing,Nothing,Nothing,Nothing)
 parseSexp :: WellFormedSExpr Atom -> Either String Command
 parseSexp (WFSList [WFCommand AddImportTag, WFText f, WFText m, WFText t]) =
   Right $ AddImport (FileName f) (ModuleName m) t
+parseSexp (WFSList ( WFCommand AddImportTag
+                   : WFText f
+                   : (addImportKW (FileName f) -> Just a))) = Right a
+
+parseSexp (WFSList [WFCommand RemoveImportTag, WFText f, WFText m]) =
+  Right $ RemoveImport (FileName f) (ModuleName m) Nothing
+parseSexp (WFSList [WFCommand RemoveImportTag, WFText f, WFText m, WFText t]) =
+  Right $ RemoveImport (FileName f) (ModuleName m) (Just t)
+parseSexp (WFSList ( WFCommand RemoveImportTag
+                   : WFText f
+                   : (removeImportKW (FileName f) -> Just r))) = Right r
 
 parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i]) =
   Right $ SrcSpan i Nothing Nothing Nothing
@@ -99,7 +132,9 @@ parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i, WFInt j]) =
   Right $ SrcSpan i Nothing (Just j) Nothing
 parseSexp (WFSList [WFCommand SrcSpanTag, WFInt i, WFInt j, WFInt k, WFInt l]) =
   Right $ SrcSpan i (Just j) (Just k) (Just l)
-parseSexp (WFSList (WFCommand SrcSpanTag : (srcSpanKeywordArgs -> Just s))) = Right s
+parseSexp (WFSList (WFCommand SrcSpanTag : (srcSpanKeywordArgs -> Just s))) =
+  Right s
+
 parseSexp s = Left ("Invalid expression: " ++ unpack (encodeOne sexpPrinter s))
 
 langParser :: SExprParser Atom (WellFormedSExpr Atom)
@@ -109,6 +144,7 @@ langParser = asWellFormed (mkParser parseAtom)
 
 reservedWord :: Reserved -> Text
 reservedWord AddImportTag = "add-import"
+reservedWord RemoveImportTag = "remove-import"
 reservedWord SrcSpanTag = "span"
 
 sexpPrinter :: SExprPrinter Atom (WellFormedSExpr Atom)
@@ -117,7 +153,11 @@ sexpPrinter = setFromCarrier fromWellFormed (basicPrint showT)
 toSexp :: Command -> WellFormedSExpr Atom
 toSexp (AddImport (FileName f) (ModuleName m) thing) =
   WFSList [ WFCommand AddImportTag, WFKeyWord "file", WFText f
-          , WFKeyWord "module", WFText m, WFText thing ]
+          , WFKeyWord "module", WFText m, WFKeyWord "thing", WFText thing ]
+toSexp (RemoveImport (FileName f) (ModuleName m) thing) =
+  WFSList $ [ WFCommand AddImportTag, WFKeyWord "file", WFText f
+            , WFKeyWord "module", WFText m ]
+            ++ maybe [] (\t -> [WFKeyWord "thing",  WFText t]) thing
 toSexp (SrcSpan sl sc el ec) =
   WFSList $ [ WFCommand SrcSpanTag, WFKeyWord "start-line", WFInt sl ]
             ++ maybe [] (\sc' -> [WFKeyWord "start-col", WFInt sc']) sc

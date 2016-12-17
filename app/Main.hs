@@ -15,6 +15,9 @@ interpret s@(SrcSpan _ _ _ _) = pure (T.unpack (printCommand s))
 interpret (AddImport (FileName f) m thing) = ExceptT $
   fmap (fmap (T.unpack . R.printResult))
        (addImportToFile (T.unpack f) m (T.unpack thing))
+interpret (RemoveImport (FileName f) m t) = ExceptT $
+  fmap (fmap (T.unpack . R.printResult))
+       (removeImportFromFile (T.unpack f) m (T.unpack <$> t))
 
 liftE :: Applicative m => Either e r -> ExceptT e m r
 liftE = ExceptT . pure

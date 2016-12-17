@@ -1,10 +1,15 @@
 {-# LANGUAGE ViewPatterns #-}
-module Language.Haskell.Edit (addImportToFile, C.ModuleName(..)) where
+module Language.Haskell.Edit
+  ( addImportToFile
+  , removeImportFromFile
+  , C.ModuleName(..)
+  ) where
+
 import Prelude hiding (mod)
 import Control.Monad ((>=>))
 import Data.Char (isUpper)
 import Data.Foldable (foldl')
-import Data.List (nub, sortOn)
+import Data.List (find, nub, sortOn)
 import qualified Data.Map as M
 import Data.Maybe (maybeToList)
 import qualified Data.Set as S
@@ -31,9 +36,9 @@ lineBeforeImports' (Module _ Nothing pragmas _ _) =
   maximum (map pragmaLine pragmas) + 1
 lineBeforeImports' _ = error "lineBeforeImports': only Modules are handled"
 
--- | Return the stat and end line numbers of a 'Comment'
-commentLines :: Comment -> (Int,Int)
-commentLines (Comment _ (SrcSpan _ start _ end _) _) = (start,end)
+-- -- | Return the start and end line numbers of a 'Comment'
+-- commentLines :: Comment -> (Int,Int)
+-- commentLines (Comment _ (SrcSpan _ start _ end _) _) = (start,end)
 
 -- | Find the line number after any pragmas, any module header, and
 -- any module-level comment lines.
@@ -50,24 +55,38 @@ lineBeforeImports (m,cs) = go cs
           | ln' < start = ln'
           | otherwise = afterComments (end+1) cs'
 
+-- | Finds the line at which an @import@ statement should be inserted
+-- assuming alphabetical ordering of @import@s *or* an existing import
+-- that should be edited. The latter is always chosen if possible.
 findLineForImport :: (Module SrcSpanInfo, [Comment])
                   -> String
                   -> (Int, Maybe (ImportDecl ()))
-findLineForImport mod@((Module _ _ _ imp _), _) m = go imp
+findLineForImport mod@((Module _ _ _ imp _), _) m =
+  case find (\(ImportDecl _ (ModuleName _ m') _ _ _ _ _ _) -> m == m') imp of
+    Just d@(ImportDecl ss _ _ _ _ _ _ _) -> (getStartLine ss, Just (() <$ d))
+    Nothing -> go imp
   where go [] = (lineBeforeImports mod, Nothing)
-        go (d@(ImportDecl ss (ModuleName _ m') _ _ _ _ _ _) : imps)
-          | m == m' = (getStartLine ss, Just (() <$ d))
+        go (ImportDecl ss (ModuleName _ m') _ _ _ _ _ _ : imps)
           | m < m' = (getStartLine ss, Nothing)
           | otherwise = go imps
 findLineForImport _ _ = error "findLineForImport: only Modules are handled"
 
-onImport :: Module l -> String -> (Maybe (ImportDecl l) -> r) -> r
-onImport (Module _ _ _ imp _) m f = go imp
-  where go [] = f Nothing
-        go (decl@(ImportDecl _ (ModuleName _ m') _ _ _ _ _ _) : imps)
-          | m == m' = f (Just decl)
+-- | Finds the first @import@ of a particular module.
+findExistingImport :: Module SrcSpanInfo -> String -> Maybe (Int, ImportDecl ())
+findExistingImport (Module _ _ _ imp _) m = go imp
+  where go [] = Nothing
+        go (d@(ImportDecl ss (ModuleName _ m') _ _ _ _ _ _) : imps)
+          | m == m' = Just (getStartLine ss, () <$ d)
           | otherwise = go imps
-onImport _ _ _ = error "onImport: only Modules are handled"
+findExistingImport _ _ = error "findExistingImport: only Modules are handled"
+
+-- onImport :: Module l -> String -> (Maybe (ImportDecl l) -> r) -> r
+-- onImport (Module _ _ _ imp _) m f = go imp
+--   where go [] = f Nothing
+--         go (decl@(ImportDecl _ (ModuleName _ m') _ _ _ _ _ _) : imps)
+--           | m == m' = f (Just decl)
+--           | otherwise = go imps
+-- onImport _ _ _ = error "onImport: only Modules are handled"
 
 data NestedImport = ImportAll | ImportSome [CName ()]
 
@@ -80,6 +99,10 @@ importSpecName (IThingWith _ n _ ) = n
 cnameName :: CName l -> Name l
 cnameName (VarName _ n) = n
 cnameName (ConName _ n) = n
+
+nameString :: Name l -> String
+nameString (Ident _ s) = s
+nameString (Symbol _ s) = s
 
 -- | Compact multiple 'IThingWith' 'ImportSpec's for the same data
 -- type or class. For example, if the 'ImportSpec' list is @(Foo(A),
@@ -155,12 +178,55 @@ addImport (C.ModuleName (T.unpack -> m)) thing parsed =
                      Just (ty,con) -> IThingWith () ty (maybeToList con)
               else IVar () (Ident () thing)
 
+-- | Convert a 'ParseResult' to an 'Either' 'String'
+parseResult :: ParseResult a -> Either String a
+parseResult (ParseOk x) = Right x
+parseResult (ParseFailed sloc msg) =
+  Left $ "Haskell parse failed at "++show sloc++": "++msg
+
 addImportToFile :: FilePath
                 -> C.ModuleName
                 -> String
                 -> IO (Either String Result)
 addImportToFile f m t = (parseResult >=> addImport m t)
                         <$> parseFileWithComments defaultParseMode f
-  where parseResult (ParseOk x) = Right x
-        parseResult (ParseFailed sloc msg) =
-          Left $ "Haskell parse failed at "++show sloc++": "++msg
+
+-- | Remove an entire import line
+removeModuleImport :: C.ModuleName
+                   -> Module SrcSpanInfo
+                   -> Either String Result
+removeModuleImport (C.ModuleName (T.unpack -> m)) parsed =
+  case findExistingImport parsed m of
+    Nothing -> Left ("Couldn't find an import of " ++ m)
+    Just (ln,_) -> Right (RemoveLine ln)
+
+-- | Remove the import of a particular identifier.
+removeThingImport :: C.ModuleName
+                  -> String
+                  -> Module SrcSpanInfo
+                  -> Either String Result
+removeThingImport (C.ModuleName (T.unpack -> m)) thing parsed =
+  case findExistingImport parsed m of
+    Nothing -> Left ("Couldn't find an import of " ++ m)
+    Just (ln,imp) ->
+      case importSpecs imp of
+        Nothing -> noThing
+        Just (ImportSpecList _ b specs) ->
+          case break ((== thing) . nameString . importSpecName) specs of
+             (_,[]) -> noThing
+             (h,_:t) ->
+               let specs' = ImportSpecList () b (h++t)
+                   import' = imp {importSpecs = Just specs'}
+               in if null h && null t
+                  then Right $ RemoveLine ln
+                  else Right $ ReplaceLine ln (T.pack (prettyPrint import'))
+  where noThing = Left ("Couldn't find an import of "++thing++ " from "++m)
+
+removeImportFromFile :: FilePath
+                     -> C.ModuleName
+                     -> Maybe String
+                     -> IO (Either String Result)
+removeImportFromFile f m t =
+  (parseResult >=> remImp . fst) <$> parseFileWithComments defaultParseMode f
+  where
+    remImp = maybe (removeModuleImport m) (removeThingImport m) t

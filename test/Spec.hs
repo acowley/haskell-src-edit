@@ -13,6 +13,7 @@ testFile = unlines [
   , "-- Here are my imports"
   , "import Data.Foldable"
   , "import Pipes (Producer, (>->))"
+  , "import Data.Map (Map)"
   , ""
   , "myfun :: Int -> Int"
   , "myfun = (+42)"
@@ -28,10 +29,30 @@ main =
     writeFile f testFile
     hspec $ do
       describe "Add new import" $
-        do r <- runIO (addImportToFile f (ModuleName "Data.Maybe") "fromMaybe")
-           it "Finds the right line" $
-             fmap printResult r `shouldBe` Right "(add-line 5 \"import Data.Maybe (fromMaybe)\")"
-      describe "Updates an existing import" $
-        do r <- runIO (addImportToFile f (ModuleName "Pipes") "Consumer")
+        do r1 <- runIO (addImportToFile f (ModuleName "Data.Maybe") "fromMaybe")
+           it "Can add a new import line" $
+             fmap printResult r1 `shouldBe`
+             Right "(add-line 5 \"import Data.Maybe (fromMaybe)\")"
+           r2 <- runIO (addImportToFile f (ModuleName "Pipes") "Consumer")
            it "Updates the right import" $
-             fmap printResult r `shouldBe` Right "(replace-line 5 \"import Pipes (Consumer, Producer, (>->))\")"
+             fmap printResult r2 `shouldBe`
+             Right "(replace-line 5 \"import Pipes (Consumer, Producer, (>->))\")"
+           r3 <- runIO (addImportToFile f (ModuleName "Data.Map") "insertWith")
+           it "Can cope with unsorted imports" $
+             fmap printResult r3 `shouldBe`
+             Right "(replace-line 6 \"import Data.Map (Map, insertWith)\")"
+      describe "Remove an import" $
+        do r1 <- runIO (removeImportFromFile f (ModuleName "Data.Foldable") Nothing)
+           it "Removes the right import line" $
+             fmap printResult r1 `shouldBe` Right "(remove-line 4)"
+           r2 <- runIO (removeImportFromFile f (ModuleName "Pipes") (Just "Producer"))
+           it "Can remove an imported type" $
+             fmap printResult r2 `shouldBe`
+             Right "(replace-line 5 \"import Pipes ((>->))\")"
+           r3 <- runIO (removeImportFromFile f (ModuleName "Pipes") (Just ">->"))
+           it "Can remove an imported operator" $
+             fmap printResult r3 `shouldBe`
+             Right "(replace-line 5 \"import Pipes (Producer)\")"
+           r4 <- runIO (removeImportFromFile f (ModuleName "Data.Map") (Just "Map"))
+           it "Removes vestigial imports" $
+             fmap printResult r4 `shouldBe` Right "(remove-line 6)"
