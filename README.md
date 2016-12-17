@@ -1,6 +1,5 @@
 # Basic Programmatic Editing of Haskell Source
 
-- [ ] `import` statement addition
-- [ ] Add to existing `import`
-- [ ] Remove from existing `import`
-
+- [x] `import` statement addition
+- [x] Add to existing `import`
+- [x] Remove from existing `import`
