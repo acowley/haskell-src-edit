@@ -9,14 +9,9 @@ import qualified Data.Map as M
 import Data.Maybe (maybeToList)
 import qualified Data.Set as S
 import qualified Data.Text as T
-import qualified Language.Haskell.Edit.Lang as C
+import qualified Language.Haskell.Edit.Command as C
 import Language.Haskell.Edit.Result (Result(..))
 import Language.Haskell.Exts
-
-testMod :: IO (ParseResult (Module SrcSpanInfo, [Comment]))
-testMod = parseFileWithComments
-            defaultParseMode
-            "/Users/acowley/Documents/Projects/VinylRecords/Frames/demo/MissingData.hs"
 
 getEndLine :: SrcSpanInfo -> Int
 getEndLine (SrcSpanInfo (SrcSpan _ _ _ ln _) _) = ln

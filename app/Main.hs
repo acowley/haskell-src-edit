@@ -3,7 +3,7 @@ module Main where
 import Control.Monad.Trans.Except
 import qualified Data.Text as T
 import Language.Haskell.Edit
-import Language.Haskell.Edit.Lang
+import Language.Haskell.Edit.Command
 import qualified Language.Haskell.Edit.Result as R
 import System.Environment
 

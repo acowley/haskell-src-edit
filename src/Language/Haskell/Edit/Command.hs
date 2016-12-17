@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings, PatternSynonyms, ViewPatterns #-}
-module Language.Haskell.Edit.Lang where
+module Language.Haskell.Edit.Command where
 import Control.Monad ((>=>))
 import Data.Char (digitToInt)
 import Data.SCargot
@@ -126,15 +126,6 @@ toSexp (SrcSpan sl sc el ec) =
 
 parseExp :: Text -> Either String Command
 parseExp = decodeOne langParser >=> parseSexp
-
-test1 :: Either String (WellFormedSExpr Atom)
-test1 = decodeOne langParser "(add-import \"Pipes\" \"Consumer\")"
-
-test2 :: Either String (WellFormedSExpr Atom)
-test2 = decodeOne langParser "(span :start-line 23 :end-line 42 :start-col 2)"
-
-roundTrip1 :: Either String Text
-roundTrip1 = test2 >>= parseSexp >>= pure . encodeOne sexpPrinter . toSexp
 
 printCommand :: Command -> Text
 printCommand = encodeOne sexpPrinter . toSexp

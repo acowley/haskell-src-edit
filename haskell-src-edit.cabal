@@ -16,7 +16,7 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     Language.Haskell.Edit
-                       Language.Haskell.Edit.Lang
+                       Language.Haskell.Edit.Command
                        Language.Haskell.Edit.Result
   build-depends:       base >= 4.7 && < 5,
                        haskell-src-exts >= 1.19.1,
