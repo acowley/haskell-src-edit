@@ -21,8 +21,8 @@ import Language.Haskell.Exts
 getEndLine :: SrcSpanInfo -> Int
 getEndLine (SrcSpanInfo (SrcSpan _ _ _ ln _) _) = ln
 
-getStartLine :: SrcSpanInfo -> Int
-getStartLine (SrcSpanInfo (SrcSpan _ ln _ _ _) _) = ln
+getLineSpan :: SrcSpanInfo -> (Int,Int)
+getLineSpan (SrcSpanInfo (SrcSpan _ lnStart _ lnEnd _) _) = (lnStart, lnEnd)
 
 -- | Return the ending line of a pragma
 pragmaLine :: ModulePragma SrcSpanInfo -> Int
@@ -60,23 +60,26 @@ lineBeforeImports (m,cs) = go cs
 -- that should be edited. The latter is always chosen if possible.
 findLineForImport :: (Module SrcSpanInfo, [Comment])
                   -> String
-                  -> (Int, Maybe (ImportDecl ()))
+                  -> ((Int, Int), Maybe (ImportDecl ()))
 findLineForImport mod@((Module _ _ _ imp _), _) m =
   case find (\(ImportDecl _ (ModuleName _ m') _ _ _ _ _ _) -> m == m') imp of
-    Just d@(ImportDecl ss _ _ _ _ _ _ _) -> (getStartLine ss, Just (() <$ d))
+    Just d@(ImportDecl ss _ _ _ _ _ _ _) -> (getLineSpan ss, Just (() <$ d))
     Nothing -> go imp
-  where go [] = (lineBeforeImports mod, Nothing)
+  where go [] = let ln = lineBeforeImports mod
+                in ((ln, ln), Nothing)
         go (ImportDecl ss (ModuleName _ m') _ _ _ _ _ _ : imps)
-          | m < m' = (getStartLine ss, Nothing)
+          | m < m' = (getLineSpan ss, Nothing)
           | otherwise = go imps
 findLineForImport _ _ = error "findLineForImport: only Modules are handled"
 
 -- | Finds the first @import@ of a particular module.
-findExistingImport :: Module SrcSpanInfo -> String -> Maybe (Int, ImportDecl ())
+findExistingImport :: Module SrcSpanInfo
+                   -> String
+                   -> Maybe ((Int,Int), ImportDecl ())
 findExistingImport (Module _ _ _ imp _) m = go imp
   where go [] = Nothing
         go (d@(ImportDecl ss (ModuleName _ m') _ _ _ _ _ _) : imps)
-          | m == m' = Just (getStartLine ss, () <$ d)
+          | m == m' = Just (getLineSpan ss, () <$ d)
           | otherwise = go imps
 findExistingImport _ _ = error "findExistingImport: only Modules are handled"
 
@@ -159,14 +162,14 @@ addImport (C.ModuleName (T.unpack -> m)) thing parsed =
   case impThing of
     Left e -> Left e
     Right th ->  case imp of
-      Nothing -> Right $ AddLine ln (T.pack (prettyPrint (impStmt th)))
+      Nothing -> Right $ AddLine (fst lns) (T.pack (prettyPrint (impStmt th)))
       Just existingImport ->
         let specs = maybe (ImportSpecList () False [th])
                           (addToImport th)
                           (importSpecs existingImport)
             import' = existingImport {importSpecs = Just specs}
-        in Right $ ReplaceLine ln (T.pack (prettyPrint import'))
-  where (ln, imp) = findLineForImport parsed m
+        in Right $ ReplaceLines lns (T.pack (prettyPrint import'))
+  where (lns, imp) = findLineForImport parsed m
         impStmt th = ImportDecl () (ModuleName () m) False False False Nothing Nothing (Just (ImportSpecList () False [th]))
         impThing =
           case thing of
@@ -198,35 +201,60 @@ removeModuleImport :: C.ModuleName
 removeModuleImport (C.ModuleName (T.unpack -> m)) parsed =
   case findExistingImport parsed m of
     Nothing -> Left ("Couldn't find an import of " ++ m)
-    Just (ln,_) -> Right (RemoveLine ln)
+    Just (lns,_) -> Right (RemoveLines lns)
 
--- | Remove the import of a particular identifier.
+-- | Remove the import of a particular constructor or class method name
+-- from the import of a datatype or typeclass.
+removeThingWithImport :: ImportSpec l -> String -> Either String (ImportSpec l)
+removeThingWithImport (IThingWith l n ws) w =
+  case break ((== w) . nameString . cnameName) ws of
+    (_,[]) -> Left $ "Couldn't find an import of "++w++" from "++nameString n
+    (h,_:t) -> Right $ IThingWith l n (h++t)
+removeThingWithImport _ w =
+  let whichThing = case w of
+                     [] -> "unknown thing"
+                     (c:_) | isUpper c -> "constructor"
+                           | otherwise -> "method"
+  in Left ("Couldn't find an import of "++whichThing++" "++w)
+
+-- | Remove the import of a particular identifier. Note that this can
+-- leave us with an empty import list, but we do not remove the import
+-- altogether in case we are relying on the import of instances from
+-- that module.
 removeThingImport :: C.ModuleName
                   -> String
+                  -> Maybe String
                   -> Module SrcSpanInfo
                   -> Either String Result
-removeThingImport (C.ModuleName (T.unpack -> m)) thing parsed =
+removeThingImport (C.ModuleName (T.unpack -> m)) thing thingWith parsed =
   case findExistingImport parsed m of
     Nothing -> Left ("Couldn't find an import of " ++ m)
-    Just (ln,imp) ->
+    Just (lns,imp) ->
       case importSpecs imp of
         Nothing -> noThing
         Just (ImportSpecList _ b specs) ->
           case break ((== thing) . nameString . importSpecName) specs of
              (_,[]) -> noThing
-             (h,_:t) ->
-               let specs' = ImportSpecList () b (h++t)
-                   import' = imp {importSpecs = Just specs'}
-               in if null h && null t
-                  then Right $ RemoveLine ln
-                  else Right $ ReplaceLine ln (T.pack (prettyPrint import'))
-  where noThing = Left ("Couldn't find an import of "++thing++ " from "++m)
+             (h,spec:t) -> do
+               specs' <-
+                 case thingWith of
+                   Nothing -> return (ImportSpecList () b (h++t))
+                   Just w -> do
+                     spec' <- removeThingWithImport spec w
+                     return (ImportSpecList () b (h++spec':t))
+               let import' = imp {importSpecs = Just specs'}
+               return (ReplaceLines lns (T.pack (prettyPrint import')))
+  where noThing = Left ("Couldn't find an import of "++
+                         thing++ noWith ++ " from "++m)
+        noWith = case thingWith of
+                   Nothing -> ""
+                   Just w -> " (" ++ w ++ ")"
 
 removeImportFromFile :: FilePath
                      -> C.ModuleName
-                     -> Maybe String
+                     -> Maybe (String, Maybe String)
                      -> IO (Either String Result)
 removeImportFromFile f m t =
   (parseResult >=> remImp . fst) <$> parseFileWithComments defaultParseMode f
   where
-    remImp = maybe (removeModuleImport m) (removeThingImport m) t
+    remImp = maybe (removeModuleImport m) (uncurry (removeThingImport m)) t

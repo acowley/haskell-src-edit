@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 module Main where
+import Control.Arrow ((***))
 import Control.Monad.Trans.Except
 import qualified Data.Text as T
 import Language.Haskell.Edit
@@ -17,7 +18,9 @@ interpret (AddImport (FileName f) m thing) = ExceptT $
        (addImportToFile (T.unpack f) m (T.unpack thing))
 interpret (RemoveImport (FileName f) m t) = ExceptT $
   fmap (fmap (T.unpack . R.printResult))
-       (removeImportFromFile (T.unpack f) m (T.unpack <$> t))
+       (removeImportFromFile (T.unpack f)
+                             m
+                             ((T.unpack *** fmap T.unpack) <$> t))
 
 liftE :: Applicative m => Either e r -> ExceptT e m r
 liftE = ExceptT . pure

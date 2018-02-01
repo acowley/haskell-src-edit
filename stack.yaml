@@ -1,14 +1,10 @@
-resolver: lts-7.13
+resolver: lts-10.4
 
 packages:
 - '.'
 
 extra-deps:
-- haskell-src-exts-1.19.1
-- s-cargot-0.1.1.1
-# - sexp-grammar-1.2.2
-# - haskell-src-exts-1.18.2
-# - haskell-src-exts-prisms-1.18.2.0
+- s-cargot-0.1.2.0
 
 flags: {}
 

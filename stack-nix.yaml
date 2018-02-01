@@ -1,0 +1,12 @@
+resolver: ghc-8.2.2
+
+packages:
+- '.'
+
+flags: {}
+
+extra-package-dbs: []
+
+nix:
+  enable: true
+  shell-file: shell.nix

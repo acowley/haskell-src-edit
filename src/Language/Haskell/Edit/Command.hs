@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, PatternSynonyms, ViewPatterns #-}
+{-# LANGUAGE OverloadedStrings, PatternSynonyms, TupleSections, ViewPatterns #-}
 module Language.Haskell.Edit.Command where
 import Control.Monad ((>=>))
 import Data.Char (digitToInt)
@@ -34,7 +34,7 @@ newtype ModuleName = ModuleName { moduleName :: Text } deriving (Eq, Show)
 newtype FileName = FileName { fileName :: Text } deriving (Eq, Show)
 
 data Command = AddImport FileName ModuleName Text
-             | RemoveImport FileName ModuleName (Maybe Text)
+             | RemoveImport FileName ModuleName (Maybe (Text, Maybe Text))
              | SrcSpan Int (Maybe Int) (Maybe Int) (Maybe Int)
   deriving (Eq, Show)
 
@@ -86,12 +86,17 @@ addImportKW f = go Nothing Nothing
               _ -> Nothing
 
 removeImportKW :: FileName -> [WellFormedSExpr Atom] -> Maybe Command
-removeImportKW f = go Nothing Nothing
-  where go (Just m) thing [] = Just (RemoveImport f (ModuleName m) thing)
-        go m thing xs =
+removeImportKW f = go Nothing Nothing Nothing
+  where go (Just m) thing thingWith [] =
+          Just (RemoveImport f (ModuleName m) (fmap (,thingWith) thing))
+        go m thing thingWith xs =
           case xs of
-            (WFKeyWord "module" : WFText m' : xs') -> go (Just m') thing xs'
-            (WFKeyWord "thing" : WFText t : xs') -> go m (Just t) xs'
+            (WFKeyWord "module" : WFText m' : xs') ->
+              go (Just m') thing thingWith xs'
+            (WFKeyWord "thing" : WFText t : xs') ->
+              go m (Just t) thingWith xs'
+            (WFKeyWord "thingWith" : WFText w : xs') ->
+              go m thing (Just w) xs'
             _ -> Nothing
 
 -- | Pick out any of the start line, start column, end line, and end
@@ -121,7 +126,9 @@ parseSexp (WFSList ( WFCommand AddImportTag
 parseSexp (WFSList [WFCommand RemoveImportTag, WFText f, WFText m]) =
   Right $ RemoveImport (FileName f) (ModuleName m) Nothing
 parseSexp (WFSList [WFCommand RemoveImportTag, WFText f, WFText m, WFText t]) =
-  Right $ RemoveImport (FileName f) (ModuleName m) (Just t)
+  Right $ RemoveImport (FileName f) (ModuleName m) (Just (t, Nothing))
+parseSexp (WFSList [WFCommand RemoveImportTag, WFText f, WFText m, WFText t, WFText w]) =
+  Right $ RemoveImport (FileName f) (ModuleName m) (Just (t, Just w))
 parseSexp (WFSList ( WFCommand RemoveImportTag
                    : WFText f
                    : (removeImportKW (FileName f) -> Just r))) = Right r
@@ -155,9 +162,13 @@ toSexp (AddImport (FileName f) (ModuleName m) thing) =
   WFSList [ WFCommand AddImportTag, WFKeyWord "file", WFText f
           , WFKeyWord "module", WFText m, WFKeyWord "thing", WFText thing ]
 toSexp (RemoveImport (FileName f) (ModuleName m) thing) =
-  WFSList $ [ WFCommand AddImportTag, WFKeyWord "file", WFText f
+  WFSList $ [ WFCommand RemoveImportTag, WFKeyWord "file", WFText f
             , WFKeyWord "module", WFText m ]
-            ++ maybe [] (\t -> [WFKeyWord "thing",  WFText t]) thing
+            ++ case thing of
+                 Nothing -> []
+                 (Just (t, Nothing)) -> [WFKeyWord "thing",  WFText t]
+                 (Just (t, Just w)) -> [ WFKeyWord "thing", WFText t
+                                       , WFKeyWord "thingWith", WFText w ]
 toSexp (SrcSpan sl sc el ec) =
   WFSList $ [ WFCommand SrcSpanTag, WFKeyWord "start-line", WFInt sl ]
             ++ maybe [] (\sc' -> [WFKeyWord "start-col", WFInt sc']) sc

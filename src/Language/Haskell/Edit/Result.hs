@@ -5,12 +5,12 @@ import Data.SCargot.Repr
 import Data.Text (Text)
 import qualified Data.Text as T
 
-data Tag = ReplaceLineTag | AddLineTag | RemoveLineTag
+data Tag = ReplaceLinesTag | AddLineTag | RemoveLinesTag
   deriving (Eq,Ord,Show)
 
-data Result = ReplaceLine Int Text
+data Result = ReplaceLines (Int,Int) Text
             | AddLine Int Text
-            | RemoveLine Int
+            | RemoveLines (Int,Int)
 
 data Atom
   = Reserved Tag
@@ -42,20 +42,20 @@ pattern WFKeyWord t = WFSAtom (KeyWord t)
 -- * Printing
 
 reservedWord :: Tag -> Text
-reservedWord ReplaceLineTag = "replace-line"
+reservedWord ReplaceLinesTag = "replace-lines"
 reservedWord AddLineTag = "add-line"
-reservedWord RemoveLineTag = "remove-line"
+reservedWord RemoveLinesTag = "remove-lines"
 
 sexpPrinter :: SExprPrinter Atom (WellFormedSExpr Atom)
 sexpPrinter = setFromCarrier fromWellFormed (basicPrint showT)
 
 toSexp :: Result -> WellFormedSExpr Atom
-toSexp (ReplaceLine n t) =
-  WFSList [WFResult ReplaceLineTag, WFInt n, WFText t]
+toSexp (ReplaceLines (n, m) t) =
+  WFSList [WFResult ReplaceLinesTag, WFInt n, WFInt m, WFText t]
 toSexp (AddLine n t) =
   WFSList [WFResult AddLineTag, WFInt n, WFText t]
-toSexp (RemoveLine n) =
-  WFSList [WFResult RemoveLineTag, WFInt n]
+toSexp (RemoveLines (n, m)) =
+  WFSList [WFResult RemoveLinesTag, WFInt n, WFInt m]
 
 printResult :: Result -> Text
 printResult = encodeOne sexpPrinter . toSexp
